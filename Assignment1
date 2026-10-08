@@ -1,0 +1,196 @@
+from ucimlrepo import fetch_ucirepo
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+
+
+data = fetch_ucirepo(id=31)
+X = data.data.features.values
+y = data.data.targets.values.ravel() - 1
+counts = np.bincount(y)
+plt.bar(range(7), counts)
+plt.xlabel("Class")
+plt.ylabel("Samples")
+plt.title("Class Distribution")
+plt.show()
+
+Y = np.eye(7)[y]
+X_train, X_temp, Y_train, Y_temp, y_train, y_temp = train_test_split(
+    X, Y, y, test_size=0.2, random_state=42, stratify=y
+)
+X_val, X_test, Y_val, Y_test, y_val, y_test = train_test_split(
+    X_temp, Y_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
+)
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
+X_test = scaler.transform(X_test)
+N = len(y_train)
+class_weights = N / (7 * np.bincount(y_train, minlength=7))
+np.random.seed(42)
+
+W1 = np.random.randn(54, 64) * np.sqrt(2 / 54)
+b1 = np.zeros((1, 64))
+
+W2 = np.random.randn(64, 32) * np.sqrt(2 / 64)
+b2 = np.zeros((1, 32))
+
+W3 = np.random.randn(32, 16) * np.sqrt(2 / 32)
+b3 = np.zeros((1, 16))
+
+W4 = np.random.randn(16, 7) * np.sqrt(2 / 16)
+b4 = np.zeros((1, 7))
+
+lr = 0.01
+batch_size = 128
+def relu(x):
+    return np.maximum(0, x)
+
+
+def softmax(x):
+    x = x - np.max(x, axis=1, keepdims=True)
+    e = np.exp(x)
+    return e / np.sum(e, axis=1, keepdims=True)
+
+
+def forward(X):
+    z1 = X @ W1 + b1
+    a1 = relu(z1)
+
+    z2 = a1 @ W2 + b2
+    a2 = relu(z2)
+
+    z3 = a2 @ W3 + b3
+    a3 = relu(z3)
+
+    z4 = a3 @ W4 + b4
+    y_hat = softmax(z4)
+
+    return y_hat, (z1, a1, z2, a2, z3, a3)
+
+
+def loss(y, y_hat):
+    y_hat = np.clip(y_hat, 1e-12, 1)
+    weights = class_weights[np.argmax(y, axis=1)]
+
+    return -np.mean(
+        weights * np.sum(y * np.log(y_hat), axis=1)
+    )
+train_loss = []
+val_loss = []
+train_acc = []
+val_acc = []
+
+best_loss = np.inf
+wait = 0
+patience = 15
+
+for epoch in range(50):
+
+    idx = np.random.permutation(len(X_train))
+    Xs = X_train[idx]
+    Ys = Y_train[idx]
+
+    for i in range(0, len(Xs), batch_size):
+
+        xb = Xs[i:i + batch_size]
+        yb = Ys[i:i + batch_size]
+
+        yh, cache = forward(xb)
+        z1, a1, z2, a2, z3, a3 = cache
+
+        m = len(xb)
+        weights = class_weights[np.argmax(yb, axis=1)]
+
+        dz4 = (yh - yb) * weights[:, None] / m
+        dW4 = a3.T @ dz4
+        db4 = np.sum(dz4, axis=0, keepdims=True)
+
+        dz3 = (dz4 @ W4.T) * (z3 > 0)
+        dW3 = a2.T @ dz3
+        db3 = np.sum(dz3, axis=0, keepdims=True)
+
+        dz2 = (dz3 @ W3.T) * (z2 > 0)
+        dW2 = a1.T @ dz2
+        db2 = np.sum(dz2, axis=0, keepdims=True)
+
+        dz1 = (dz2 @ W2.T) * (z1 > 0)
+        dW1 = xb.T @ dz1
+        db1 = np.sum(dz1, axis=0, keepdims=True)
+
+        W1 -= lr * dW1
+        b1 -= lr * db1
+        W2 -= lr * dW2
+        b2 -= lr * db2
+        W3 -= lr * dW3
+        b3 -= lr * db3
+        W4 -= lr * dW4
+        b4 -= lr * db4
+
+    # Metrics
+    p_train, _ = forward(X_train)
+    p_val, _ = forward(X_val)
+
+    tl = loss(Y_train, p_train)
+    vl = loss(Y_val, p_val)
+
+    tr = np.argmax(p_train, axis=1)
+    va = np.argmax(p_val, axis=1)
+
+    ta = accuracy_score(y_train, tr)
+    va_acc = accuracy_score(y_val, va)
+
+    train_loss.append(tl)
+    val_loss.append(vl)
+    train_acc.append(ta)
+    val_acc.append(va_acc)
+
+    print(
+        f"Epoch {epoch+1:02d} | "
+        f"Train Loss: {tl:.4f} | Val Loss: {vl:.4f} | "
+        f"Train Acc: {ta:.4f} | Val Acc: {va_acc:.4f}"
+    )
+
+    if vl < best_loss:
+        best_loss = vl
+        wait = 0
+
+        best = [
+            W1.copy(), b1.copy(),
+            W2.copy(), b2.copy(),
+            W3.copy(), b3.copy(),
+            W4.copy(), b4.copy()
+        ]
+    else:
+        wait += 1
+        if wait == patience:
+            print("Early stopping")
+            break
+W1, b1, W2, b2, W3, b3, W4, b4 = best
+test_prob, _ = forward(X_test)
+test_pred = np.argmax(test_prob, axis=1)
+
+print("\nAccuracy:", accuracy_score(y_test, test_pred))
+print("Macro Precision:", precision_score(y_test, test_pred, average="macro", zero_division=0))
+print("Macro Recall:", recall_score(y_test, test_pred, average="macro", zero_division=0))
+print("Macro F1:", f1_score(y_test, test_pred, average="macro", zero_division=0))
+cm = confusion_matrix(y_test, test_pred)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.title("Confusion Matrix")
+plt.show()
+
+plt.plot(train_loss, label="Train")
+plt.plot(val_loss, label="Validation")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss Curve")
+plt.legend()
+plt.show()
